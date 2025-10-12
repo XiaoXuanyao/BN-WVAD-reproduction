@@ -16,8 +16,8 @@ class I3DInterface():
     
     def batch_predict(self, dataset_path, output_path, snippet_len=30*3, batch_size=8):
         Debug.log("I3D", "Starting batch prediction...")
-        # for file in os.listdir(dataset_path + "/Train"):
-        #     self.predict(dataset_path + "/Train/" + file, output_path + "/Train", snippet_len=snippet_len, batch_size=batch_size)
+        for file in os.listdir(dataset_path + "/Train"):
+            self.predict(dataset_path + "/Train/" + file, output_path + "/Train", snippet_len=snippet_len, batch_size=batch_size)
         for file in os.listdir(dataset_path + "/Test"):
             self.predict(dataset_path + "/Test/" + file, output_path + "/Test", snippet_len=snippet_len, batch_size=batch_size)
 

@@ -18,10 +18,10 @@ if __name__ == "__main__":
 
     # Example usage of RebuildDataset to organize dataset into Train and Test sets
     #
-    DATASET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Splited"
-    OUTPUT = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features"
-    i3d = I3DInterface()
-    i3d.batch_predict(DATASET, OUTPUT, 18, 16)
+    # DATASET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Splited"
+    # OUTPUT = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features"
+    # i3d = I3DInterface()
+    # i3d.batch_predict(DATASET, OUTPUT, 18, 16)
 
 
     # Example usage of divide dataset into Train and Val sets
@@ -33,34 +33,34 @@ if __name__ == "__main__":
 
     # Example usage of Training the model
     #
-    # TRAIN_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-TrainVal/Train"
-    # VAL_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-TrainVal/Val"
-    # train_set = MDataset(TRAIN_SET)
-    # val_set = MDataset(VAL_SET)
-    # train_sampler = MSampler(train_set.label_list, batch_size=64)
-    # val_sampler = MSampler(val_set.label_list, batch_size=64)
-    # train_dataloader = DataLoader(train_set, batch_sampler=train_sampler)
-    # val_dataloader = DataLoader(val_set, batch_sampler=val_sampler)
-    # model = Backbone().cuda().float()
-    # enhancer = Enhancer().cuda().float()
-    # classifier1 = Classifier(32).cuda().float()
-    # classifier2 = Classifier(16).cuda().float()
-    # train(
-    #     model=model,
-    #     enhancer=enhancer,
-    #     classifier1=classifier1,
-    #     classifier2=classifier2,
-    #     train_loader=train_dataloader,
-    #     val_loader=val_dataloader,
-    #     criterion=MLoss(5, 20),
-    #     optimizer=torch.optim.Adam(
-    #         list(model.parameters()) + list(enhancer.parameters()) + list(classifier1.parameters()) + list(classifier2.parameters()), lr=0.0001, weight_decay=0.00005
-    #     ),
-    #     epochs=10,
-    #     alpha=0.1,
-    #     ps=0.1,
-    #     pb=0.2,
-    #     device="cuda",
-    #     w1=5,
-    #     w2=20
-    # )
+    TRAIN_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features/Train"
+    VAL_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features/Test"
+    train_set = MDataset(TRAIN_SET)
+    val_set = MDataset(VAL_SET)
+    train_sampler = MSampler(train_set.label_list, batch_size=64)
+    val_sampler = MSampler(val_set.label_list, batch_size=64)
+    train_dataloader = DataLoader(train_set, batch_sampler=train_sampler)
+    val_dataloader = DataLoader(val_set, batch_sampler=val_sampler)
+    model = Backbone().cuda().float()
+    enhancer = Enhancer().cuda().float()
+    classifier1 = Classifier(32).cuda().float()
+    classifier2 = Classifier(16).cuda().float()
+    train(
+        model=model,
+        enhancer=enhancer,
+        classifier1=classifier1,
+        classifier2=classifier2,
+        train_loader=train_dataloader,
+        val_loader=val_dataloader,
+        criterion=MLoss(5, 20),
+        optimizer=torch.optim.Adam(
+            list(model.parameters()) + list(enhancer.parameters()) + list(classifier1.parameters()) + list(classifier2.parameters()), lr=0.0001, weight_decay=0.00005
+        ),
+        epochs=10,
+        alpha=0.1,
+        ps=0.1,
+        pb=0.2,
+        device="cuda",
+        w1=5,
+        w2=20
+    )
