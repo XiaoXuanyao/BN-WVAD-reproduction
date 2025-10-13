@@ -49,6 +49,9 @@ if __name__ == "__main__":
     enhancer = Enhancer().cuda().float()
     classifier1 = Classifier(32).cuda().float()
     classifier2 = Classifier(16).cuda().float()
+    optimizer = torch.optim.Adam(
+            list(model.parameters()) + list(enhancer.parameters()) + list(classifier1.parameters()) + list(classifier2.parameters()), lr=1e-4, weight_decay=5e-5
+        )
     train(
         model=model,
         enhancer=enhancer,
@@ -58,9 +61,8 @@ if __name__ == "__main__":
         val_loader=val_dataloader,
         test_loader=test_dataloader,
         criterion=MLoss(5, 20),
-        optimizer=torch.optim.Adam(
-            list(model.parameters()) + list(enhancer.parameters()) + list(classifier1.parameters()) + list(classifier2.parameters()), lr=5e-5, weight_decay=5e-5
-        ),
+        optimizer=optimizer,
+        scheduler=torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5),
         epochs=EPOCHS,
         alpha=0.1,
         ps=0.1,

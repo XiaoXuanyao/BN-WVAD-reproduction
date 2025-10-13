@@ -111,7 +111,7 @@ class Classifier(nn.Module):
 # Calculate Mahalanobis Distance from Feature and mean
 def DFM(xh, mean, var):
     d = xh - mean
-    inv = 1.0 / (var + 1e-6)
+    inv = 1.0 / (var + 1e-7)
     inv = inv.view(1, 1, -1)
 
     wd = d * inv
@@ -119,7 +119,7 @@ def DFM(xh, mean, var):
         dfm = torch.sum(wd * d)
     else:
         dfm = torch.sum(wd * d, dim=-1)
-    return torch.sqrt(dfm + 1e-6)
+    return torch.sqrt(torch.clamp(dfm, min=0.0))
 
 # Sample-level Selection (SLS) Strategy
 def SLS(x: list, B, T, k):
@@ -246,8 +246,9 @@ def train_one_epoch(model, enhancer, classifier1, classifier2, dataloader, crite
             all_labels.append(labels.cpu().numpy())
 
         loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+        if i % 4 == 3 or i == len(dataloader) - 1:
+            optimizer.step()
+            optimizer.zero_grad()
         total_loss += loss.item()
         # print("labels:", labels.cpu().numpy())
         # print("preds:", pred)
@@ -365,7 +366,7 @@ def test(model, enhancer, classifier1, classifier2, dataloader, criterion, alpha
     }
 
 # Main Training Loop
-def train(model, enhancer, classifier1, classifier2, train_loader, val_loader, test_loader, criterion, optimizer, epochs, alpha, ps, pb, w1, w2, device):
+def train(model, enhancer, classifier1, classifier2, train_loader, val_loader, test_loader, criterion, optimizer, scheduler, epochs, alpha, ps, pb, w1, w2, device):
     for epoch in range(epochs):
         train_res = train_one_epoch(model, enhancer, classifier1, classifier2, train_loader, criterion, optimizer, alpha, ps, pb, w1, w2, device)
         val_res = validate(model, enhancer, classifier1, classifier2, val_loader, criterion, alpha, ps, pb, w1, w2, device)
