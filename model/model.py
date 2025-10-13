@@ -246,9 +246,8 @@ def train_one_epoch(model, enhancer, classifier1, classifier2, dataloader, crite
             all_labels.append(labels.cpu().numpy())
 
         loss.backward()
-        if i % 4 == 3 or i == len(dataloader) - 1:
-            optimizer.step()
-            optimizer.zero_grad()
+        optimizer.step()
+        optimizer.zero_grad()
         total_loss += loss.item()
         # print("labels:", labels.cpu().numpy())
         # print("preds:", pred)

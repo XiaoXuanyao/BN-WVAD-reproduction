@@ -62,7 +62,7 @@ if __name__ == "__main__":
         test_loader=test_dataloader,
         criterion=MLoss(5, 20),
         optimizer=optimizer,
-        scheduler=torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5),
+        scheduler=torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5),
         epochs=EPOCHS,
         alpha=0.1,
         ps=0.1,
