@@ -119,30 +119,28 @@ def DFM(xh, mean, var):
         dfm = torch.sum(wd * d)
     else:
         dfm = torch.sum(wd * d, dim=-1)
-    return dfm
+    return torch.sqrt(dfm + 1e-6)
 
 # Sample-level Selection (SLS) Strategy
-def SLS(x: list[dict], B, T, k):
+def SLS(x: list, B, T, k):
+    tmp = [[] for _ in range(B)]
+    for e in x:
+        tmp[e[0]].append(e)
     res = []
     for i in range(k):
-        bi = i % B
-        for e in x:
-            if e["B"] == bi:
-                res.append(e)
-                x.remove(e)
-                break
+        res.append(tmp[i % B][i // B])
     return res
 
 # Batch-level Selection (BLS) Strategy
-def BLS(x: list[dict], B, T, k):
+def BLS(x: list, B, T, k):
     return x[: k]
 
 # Sample-Batch Selection (SBS) Strategy
-def SBS(x: list[dict], B, T, ks, kb):
+def SBS(x: list, B, T, ks, kb):
     res1 = SLS(x, B, T, ks)
     res2 = BLS(x, B, T, kb)
     res = res1 + res2
-    unique = [e for e in sorted(res, key=lambda x: x["V"], reverse=True)]
+    unique = [e for e in sorted(res, key=lambda x: x[2], reverse=True)]
     return unique
     
 # Calculate MPP Loss
@@ -155,16 +153,18 @@ def MPPLoss(xn, xa, mean, var, ps, pb, m=1):
     J = J.flatten()
     V_xn = dfm_xn.flatten()
     V_xa = dfm_xa.flatten()
-    dfm_xn2 = [{"B": int(i), "T": int(j), "V": v.detach().item(), "tensor": v} for i, j, v in zip(I, J, V_xn)]
-    dfm_xa2 = [{"B": int(i), "T": int(j), "V": v.detach().item(), "tensor": v} for i, j, v in zip(I, J, V_xa)]
-    sorted_dfm_xn = sorted(dfm_xn2, key=lambda x: x["V"], reverse=True)
-    sorted_dfm_xa = sorted(dfm_xa2, key=lambda x: x["V"], reverse=True)
+    dfm_xn2 = list(zip(I.tolist(), J.tolist(), V_xn.cpu().tolist()))
+    dfm_xa2 = list(zip(I.tolist(), J.tolist(), V_xa.cpu().tolist()))
+    sorted_dfm_xn = sorted(dfm_xn2, key=lambda x: x[2], reverse=True)
+    sorted_dfm_xa = sorted(dfm_xa2, key=lambda x: x[2], reverse=True)
     sorted_dfm_xa = SBS(sorted_dfm_xa, B, T, int(B * T * ps), int(B * T * pb))
     sorted_dfm_xn = SLS(sorted_dfm_xn, B, T, len(sorted_dfm_xa))
 
     sum = 0
     for i in range(len(sorted_dfm_xa)):
-        sum += F.relu(m - sorted_dfm_xn[i]["tensor"] + sorted_dfm_xa[i]["tensor"])
+        ni, nj = sorted_dfm_xn[i][0], sorted_dfm_xn[i][1]
+        ai, aj = sorted_dfm_xa[i][0], sorted_dfm_xa[i][1]
+        sum += F.relu(m - dfm_xn[ni, nj] + dfm_xa[ai, aj])
     loss = sum / len(sorted_dfm_xa)
     return loss
 
@@ -178,57 +178,76 @@ class MLoss(nn.Module):
 
     def forward(self, nor, mpp1, mpp2):
         return nor + mpp1 * self.w1 + mpp2 * self.w2
+    
+
+class BN_Statistics:
+    def __init__(self, device):
+        self.mean1 = torch.zeros(32).to(device)
+        self.var1 = torch.ones(32).to(device)
+        self.mean2 = torch.zeros(16).to(device)
+        self.var2 = torch.ones(16).to(device)
+    
+    def update(self, model, alpha):
+        mean1 = model.bn1.running_mean
+        var1 = model.bn1.running_var
+        mean2 = model.bn2.running_mean
+        var2 = model.bn2.running_var
+        self.mean1 = (1 - alpha) * self.mean1 + alpha * mean1
+        self.var1 = (1 - alpha) * self.var1 + alpha * var1
+        self.mean2 = (1 - alpha) * self.mean2 + alpha * mean2
+        self.var2 = (1 - alpha) * self.var2 + alpha * var2
 
 
 # Training for one epoch
 def train_one_epoch(model, enhancer, classifier1, classifier2, dataloader, criterion, optimizer, alpha, ps, pb, w1, w2, device):
     model.train()
+    enhancer.train()
+    classifier1.train()
+    classifier2.train()
     total_loss = 0
     all_preds = []
     all_labels = []
-    __mean1 = torch.zeros(32).to(device)
-    __var1 = torch.ones(32).to(device)
-    __mean2 = torch.zeros(16).to(device)
-    __var2 = torch.ones(16).to(device)
+    bn_args = BN_Statistics(device)
+
+    with torch.no_grad():
+        for i, (data, labels) in enumerate(dataloader):
+            data = data.to(device)
+            labels = labels.to(device)
+            data = enhancer(data, mode="train")
+
+            xh1, xh2 = model(data)
+            bn_args.update(model, alpha)
+            if i >= 10: break
+
     for i, (data, labels) in enumerate(dataloader):
         data = data.to(device)
         labels = labels.to(device)
-        B, T, D = data.shape
         data = enhancer(data, mode="train")
 
         nmask = labels == 0
         amask = labels == 1
 
-        optimizer.zero_grad()
-
         xh1, xh2 = model(data)
-
-        mean1 = model.bn1.running_mean
-        var1 = model.bn1.running_var
-        mean2 = model.bn2.running_mean
-        var2 = model.bn2.running_var
-        __mean1 = (1 - alpha) * __mean1 + alpha * mean1
-        __var1 = (1 - alpha) * __var1 + alpha * var1
-        __mean2 = (1 - alpha) * __mean2 + alpha * mean2
-        __var2 = (1 - alpha) * __var2 + alpha * var2
+        bn_args.update(model, alpha)
 
         nor = classifier1(xh1[nmask]) * w1 + classifier2(xh2[nmask]) * w2
         nor = torch.sum(nor)
-        mpp1 = MPPLoss(xh1[nmask], xh1[amask], __mean1, __var1, ps=ps, pb=pb, m=1)
-        mpp2 = MPPLoss(xh2[nmask], xh2[amask], __mean2, __var2, ps=ps, pb=pb, m=1)
+        mpp1 = MPPLoss(xh1[nmask], xh1[amask], bn_args.mean1, bn_args.var1, ps=ps, pb=pb, m=1)
+        mpp2 = MPPLoss(xh2[nmask], xh2[amask], bn_args.mean2, bn_args.var2, ps=ps, pb=pb, m=1)
         with torch.no_grad():
             cls = classifier1(xh1) * w1 + classifier2(xh2) * w2
-            dfm1 = DFM(xh1, __mean1, __var1)
-            dfm2 = DFM(xh2, __mean2, __var2)
+            dfm1 = DFM(xh1, bn_args.mean1, bn_args.var1)
+            dfm2 = DFM(xh2, bn_args.mean2, bn_args.var2)
 
         loss = criterion(nor, mpp1, mpp2).mean()
         with torch.no_grad():
-            score = cls * torch.max(dfm1 * w1 + dfm2 * w2, -1)[0]
+            score = cls * torch.sum(dfm1 * w1 + dfm2 * w2, -1)[0]
             all_preds.append(score.cpu().numpy())
             all_labels.append(labels.cpu().numpy())
 
         loss.backward()
         optimizer.step()
+        optimizer.zero_grad()
         total_loss += loss.item()
         # print("labels:", labels.cpu().numpy())
         # print("preds:", pred)
@@ -246,44 +265,45 @@ def train_one_epoch(model, enhancer, classifier1, classifier2, dataloader, crite
 # Validation for one epoch
 def validate(model, enhancer, classifier1, classifier2, dataloader, criterion, alpha, ps, pb, w1, w2, device):
     model.eval()
+    enhancer.eval()
+    classifier1.eval()
+    classifier2.eval()
     total_loss = 0
     all_preds = []
     all_labels = []
-    __mean1 = torch.zeros(32).to(device)
-    __var1 = torch.ones(32).to(device)
-    __mean2 = torch.zeros(16).to(device)
-    __var2 = torch.ones(16).to(device)
+    bn_args = BN_Statistics(device)
     with torch.no_grad():
         for i, (data, labels) in enumerate(dataloader):
             data = data.to(device)
             labels = labels.to(device)
-            B, T, D = data.shape
+            data = enhancer(data, mode="test")
+
+            xh1, xh2 = model(data)
+            bn_args.update(model, alpha)
+            
+            if i >= 10: break
+            
+        for i, (data, labels) in enumerate(dataloader):
+            data = data.to(device)
+            labels = labels.to(device)
             data = enhancer(data, mode="test")
 
             nmask = labels == 0
             amask = labels == 1
 
             xh1, xh2 = model(data)
-
-            mean1 = model.bn1.running_mean
-            var1 = model.bn1.running_var
-            mean2 = model.bn2.running_mean
-            var2 = model.bn2.running_var
-            __mean1 = (1 - alpha) * __mean1 + alpha * mean1
-            __var1 = (1 - alpha) * __var1 + alpha * var1
-            __mean2 = (1 - alpha) * __mean2 + alpha * mean2
-            __var2 = (1 - alpha) * __var2 + alpha * var2
+            bn_args.update(model, alpha)
 
             nor = classifier1(xh1[nmask]) * w1 + classifier2(xh2[nmask]) * w2
             nor = torch.sum(nor)
-            mpp1 = MPPLoss(xh1[nmask], xh1[amask], __mean1, __var1, ps=ps, pb=pb, m=1)
-            mpp2 = MPPLoss(xh2[nmask], xh2[amask], __mean2, __var2, ps=ps, pb=pb, m=1)
+            mpp1 = MPPLoss(xh1[nmask], xh1[amask], bn_args.mean1, bn_args.var1, ps=ps, pb=pb, m=1)
+            mpp2 = MPPLoss(xh2[nmask], xh2[amask], bn_args.mean2, bn_args.var2, ps=ps, pb=pb, m=1)
             cls = classifier1(xh1) * w1 + classifier2(xh2) * w2
-            dfm1 = DFM(xh1, __mean1, __var1)
-            dfm2 = DFM(xh2, __mean2, __var2)
+            dfm1 = DFM(xh1, bn_args.mean1, bn_args.var1)
+            dfm2 = DFM(xh2, bn_args.mean2, bn_args.var2)
 
-            loss = criterion(nor, mpp1, mpp2)
-            score = cls * torch.max(dfm1 * w1 + dfm2 * w2, -1)[0]
+            loss = criterion(nor, mpp1, mpp2).mean()
+            score = cls * torch.sum(dfm1 * w1 + dfm2 * w2, -1)[0]
             pred = score.cpu().numpy()
             all_preds.append(pred)
             all_labels.append(labels.cpu().numpy())
@@ -298,9 +318,56 @@ def validate(model, enhancer, classifier1, classifier2, dataloader, criterion, a
         "auc": roc_auc_score(all_labels, all_preds)
     }
 
+def test(model, enhancer, classifier1, classifier2, dataloader, criterion, alpha, ps, pb, w1, w2, device):
+    model.eval()
+    enhancer.eval()
+    classifier1.eval()
+    classifier2.eval()
+    all_preds = []
+    all_labels = []
+    bn_args = BN_Statistics(device)
+    with torch.no_grad():
+        # prerun to stabilize BN stats
+        for i, (data, labels) in enumerate(dataloader):
+            data = data.to(device)
+            labels = labels.to(device)
+            data = enhancer(data, mode="test")
+
+            xh1, xh2 = model(data)
+            bn_args.update(model, alpha)
+            
+            if i >= 10: break
+
+        for i, (data, labels) in enumerate(dataloader):
+            data = data.to(device)
+            labels = labels.to(device)
+            data = enhancer(data, mode="test")
+
+            xh1, xh2 = model(data)
+            bn_args.update(model, alpha)
+
+            cls = classifier1(xh1) * w1 + classifier2(xh2) * w2
+            dfm1 = DFM(xh1, bn_args.mean1, bn_args.var1)
+            dfm2 = DFM(xh2, bn_args.mean2, bn_args.var2)
+
+            score = cls * torch.sum(dfm1 * w1 + dfm2 * w2, -1)[0]
+            pred = score.cpu().numpy()
+            all_preds.append(pred)
+            all_labels.append(labels.cpu().numpy())
+
+            print(f"Test Batch {i+1}/{len(dataloader)}", end='\r')
+    
+    all_preds = np.concatenate(all_preds)
+    all_labels = np.concatenate(all_labels)
+    # display_results(all_labels, all_preds)  # delete this line if don't want to display results during testing
+    return {
+        "auc": roc_auc_score(all_labels, all_preds)
+    }
+
 # Main Training Loop
-def train(model, enhancer, classifier1, classifier2, train_loader, val_loader, criterion, optimizer, epochs, alpha, ps, pb, w1, w2, device):
+def train(model, enhancer, classifier1, classifier2, train_loader, val_loader, test_loader, criterion, optimizer, epochs, alpha, ps, pb, w1, w2, device):
     for epoch in range(epochs):
         train_res = train_one_epoch(model, enhancer, classifier1, classifier2, train_loader, criterion, optimizer, alpha, ps, pb, w1, w2, device)
         val_res = validate(model, enhancer, classifier1, classifier2, val_loader, criterion, alpha, ps, pb, w1, w2, device)
-        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {train_res['loss']:.4f}, AUC: {train_res['auc']:.4f}, Val Loss: {val_res['loss']:.4f}, AUC: {val_res['auc']:.4f}")
+        test_res = test(model, enhancer, classifier1, classifier2, test_loader, criterion, alpha, ps, pb, w1, w2, device)
+        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {train_res['loss']:.4f}, AUC: {train_res['auc']:.4f} | Val Loss: {val_res['loss']:.4f}, AUC: {val_res['auc']:.4f} | Test AUC: {test_res['auc']:.4f}")

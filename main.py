@@ -3,7 +3,7 @@ from pre_process.rebuild_dataset import RebuildDataset
 from i3d.i3d import I3DInterface
 from utils.debug import Debug
 from model.model import *
-from utils.dataloader import MDataset, MSampler
+from utils.dataloader import MDataset, MSampler, MTestSampler
 from torch.utils.data import DataLoader
 
 if __name__ == "__main__":
@@ -35,12 +35,16 @@ if __name__ == "__main__":
     #
     TRAIN_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features/Train"
     VAL_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features/Test"
+    EPOCHS = 50
+    BATCH_SIZE = 64
     train_set = MDataset(TRAIN_SET)
     val_set = MDataset(VAL_SET)
-    train_sampler = MSampler(train_set.label_list, batch_size=64)
-    val_sampler = MSampler(val_set.label_list, batch_size=64)
-    train_dataloader = DataLoader(train_set, batch_sampler=train_sampler)
-    val_dataloader = DataLoader(val_set, batch_sampler=val_sampler)
+    train_sampler = MSampler(train_set.label_list, batch_size=BATCH_SIZE)
+    val_sampler = MSampler(val_set.label_list, batch_size=BATCH_SIZE)
+    test_sampler = MTestSampler(val_set.label_list, batch_size=BATCH_SIZE)
+    train_dataloader = DataLoader(train_set, batch_sampler=train_sampler, pin_memory=True)
+    val_dataloader = DataLoader(val_set, batch_sampler=val_sampler, pin_memory=True)
+    test_dataloader = DataLoader(val_set, batch_sampler=test_sampler, pin_memory=True)
     model = Backbone().cuda().float()
     enhancer = Enhancer().cuda().float()
     classifier1 = Classifier(32).cuda().float()
@@ -52,15 +56,16 @@ if __name__ == "__main__":
         classifier2=classifier2,
         train_loader=train_dataloader,
         val_loader=val_dataloader,
+        test_loader=test_dataloader,
         criterion=MLoss(5, 20),
         optimizer=torch.optim.Adam(
-            list(model.parameters()) + list(enhancer.parameters()) + list(classifier1.parameters()) + list(classifier2.parameters()), lr=0.0001, weight_decay=0.00005
+            list(model.parameters()) + list(enhancer.parameters()) + list(classifier1.parameters()) + list(classifier2.parameters()), lr=5e-5, weight_decay=5e-5
         ),
-        epochs=10,
+        epochs=EPOCHS,
         alpha=0.1,
         ps=0.1,
         pb=0.2,
-        device="cuda",
+        device=torch.device("cuda"),
         w1=5,
         w2=20
     )

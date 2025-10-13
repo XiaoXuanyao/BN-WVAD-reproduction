@@ -3,6 +3,7 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
+import math
 
 
 # Custom Dataset for loading .npy files and their labels
@@ -23,7 +24,7 @@ class MDataset(Dataset):
     
     def __getitem__(self, idx):
         data = np.load(self.file_list[idx])
-        data = torch.tensor(data, dtype=torch.float16)
+        data = torch.tensor(data, dtype=torch.float)
         data = torch.mean(data, dim=-1).float()
         label = self.label_list[idx]
         label = torch.tensor(label, dtype=torch.int)
@@ -38,7 +39,8 @@ class MSampler(Sampler):
         self.batch_size = batch_size
         self.pos_indices = np.where(self.labels == 0)[0]
         self.neg_indices = np.where(self.labels == 1)[0]
-        self.num_batches = max(len(self.pos_indices), len(self.neg_indices)) * 2 // batch_size * 2
+        once = self.batch_size / len(self.labels)
+        self.num_batches = max(0, int(math.log(0.1) / math.log(1 - once))) + 1
 
     def __iter__(self):
         for i in range(self.num_batches):
@@ -51,3 +53,18 @@ class MSampler(Sampler):
 
     def __len__(self):
         return self.num_batches
+
+
+class MTestSampler(Sampler):
+    def __init__(self, labels, batch_size):
+        self.labels = np.array(labels)
+        self.batch_size = batch_size
+        self.indices = np.arange(len(self.labels))
+    
+    def __iter__(self):
+        self.indices = np.random.permutation(self.indices)
+        for i in range(0, len(self.labels), self.batch_size):
+            yield self.indices[i:i+self.batch_size].tolist()
+
+    def __len__(self):
+        return (len(self.labels) + self.batch_size - 1) // self.batch_size
