@@ -5,14 +5,34 @@ from utils.debug import Debug
 from model.model import *
 from utils.dataloader import MDataset, MSampler, MTestSampler
 from torch.utils.data import DataLoader
+import shutil
+import threading
+import os
 
 if __name__ == "__main__":
+    shutil.rmtree("runs", ignore_errors=True)
+    os.makedirs("runs/exp1", exist_ok=True)
+    threading.Thread(target=os.system, args=("tensorboard --logdir=runs --reload_interval=8",)).start()
+
+
+    # Example usage of RebuildDataset
+    #
+    # DATASET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime"
+    # OUTPUT = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Rebuild"
+    # RebuildDataset.rebuild(DATASET, OUTPUT, )
+
+
+    # Example usage of rename files
+    #
+    # DATASET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/XD-Violence"
+    # OUTPUT = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/XD-Violence-Renamed"
+    # RebuildDataset.rename(DATASET, OUTPUT)
 
 
     # Example usage of PreProcess to split videos into snippets
     #
-    # DATASET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Rebuild"
-    # OUTPUT = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Splited"
+    # DATASET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/XD-Violence-Renamed"
+    # OUTPUT = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/XD-Violence-Splited"
     # PreProcess.batch_process(DATASET, OUTPUT, size=(224, 224), snippet_len=18*3, snippet_cnt=200, max_frames=60*10*30, sample_cnt=3)
 
 
@@ -21,7 +41,7 @@ if __name__ == "__main__":
     # DATASET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Splited"
     # OUTPUT = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features"
     # i3d = I3DInterface()
-    # i3d.batch_predict(DATASET, OUTPUT, 18, 16)
+    # i3d.batch_predict(DATASET, OUTPUT, 18, 50)
 
 
     # Example usage of divide dataset into Train and Val sets
@@ -33,9 +53,9 @@ if __name__ == "__main__":
 
     # Example usage of Training the model
     #
-    TRAIN_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features/Train"
-    VAL_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/UCF-Crime-Features/Test"
-    EPOCHS = 50
+    TRAIN_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/XD-Violence-Features/Train"
+    VAL_SET = "D:/HLCH/Works/BatchNorm_Based_VAD/Dataset/XD-Violence-Features/Test"
+    EPOCHS = 3000
     BATCH_SIZE = 64
     train_set = MDataset(TRAIN_SET)
     val_set = MDataset(VAL_SET)
@@ -60,13 +80,12 @@ if __name__ == "__main__":
         train_loader=train_dataloader,
         val_loader=val_dataloader,
         test_loader=test_dataloader,
-        criterion=MLoss(5, 20),
         optimizer=optimizer,
-        scheduler=torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5),
+        scheduler=torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.93),
         epochs=EPOCHS,
         alpha=0.1,
-        ps=0.1,
-        pb=0.2,
+        ps=0.2,
+        pb=0.4,
         device=torch.device("cuda"),
         w1=5,
         w2=20

@@ -39,6 +39,8 @@ class PreProcess():
         Debug.log("PreProcess", f"Processing video: {video_path}")
         metadata = PreProcess.get_metadata(video_path)
         frames_cnt = metadata["frames_cnt"]
+        if frames_cnt < snippet_len * 2:
+            return
         if kwargs.get("max_frames") and frames_cnt > kwargs["max_frames"]:
             return
         video = cv2.VideoCapture(video_path)

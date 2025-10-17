@@ -5,7 +5,14 @@ import numpy as np
 from UR_DMU.model import *
 from utils.debug import Debug, CostTime
 from utils.display import display_results
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, average_precision_score
+from torch.utils.tensorboard import SummaryWriter
+import torchvision
+import shutil
+import os
+
+
+writer = SummaryWriter("runs/exp1")
 
 
 # Enhancer Module
@@ -14,8 +21,8 @@ class Enhancer(nn.Module):
         super(Enhancer, self).__init__()
         self.enc = Temporal(input_size=400, out_size=512)
         self.selfatt = Transformer(512, 2, 4, 128, 512, dropout=0.5)
-        self.amem = Memory_Unit(nums=60, dim=512)
-        self.nmem = Memory_Unit(nums=60, dim=512)
+        self.amem = Memory_Unit(nums=80, dim=512)
+        self.nmem = Memory_Unit(nums=80, dim=512)
         self.vaeenc_mu = nn.Sequential(
             nn.Linear(512, 512),
             nn.ReLU(),
@@ -42,7 +49,6 @@ class Enhancer(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(512, 512)
         )
-        self.dropout = nn.Dropout(0.1)
 
     def _reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -53,15 +59,15 @@ class Enhancer(nn.Module):
         B, T, D = x.size()
         x = self.enc(x)
         x = self.selfatt(x)
-        x = self.dropout(x)
 
         natt, ah = self.amem(x)
         natt, nh = self.nmem(x)
         h = (ah + nh) / 2
 
         z = h
+        z = x
         if mode == "train":
-            fm = h.view(-1, 512)
+            fm = x.view(-1, 512)
             mu = self.vaeenc_mu(fm)
             logvar = self.vaeenc_var(fm)
             z = self._reparameterize(mu, logvar)
@@ -100,12 +106,30 @@ class Backbone(nn.Module):
 class Classifier(nn.Module):
     def __init__(self, input_channels):
         super(Classifier, self).__init__()
-        self.conv = nn.Conv1d(200 * input_channels, 1, 1, 1, 0)
+        self.conv = nn.Conv1d(input_channels, 1, 1, 1, 0)
     
     def forward(self, x):
         B, T, D = x.shape
-        x = x.view(B, T * D, 1)
-        return F.sigmoid(self.conv(x)).view(B)
+        x = x.view(B * T, D, 1)
+        return F.sigmoid(self.conv(x)).view(B, T)
+    
+
+class BN_Statistics:
+    def __init__(self, device):
+        self.mean1 = torch.zeros(32).to(device)
+        self.var1 = torch.ones(32).to(device)
+        self.mean2 = torch.zeros(16).to(device)
+        self.var2 = torch.ones(16).to(device)
+    
+    def update(self, model, alpha):
+        mean1 = model.bn1.running_mean
+        var1 = model.bn1.running_var
+        mean2 = model.bn2.running_mean
+        var2 = model.bn2.running_var
+        self.mean1 = (1 - alpha) * self.mean1 + alpha * mean1
+        self.var1 = (1 - alpha) * self.var1 + alpha * var1
+        self.mean2 = (1 - alpha) * self.mean2 + alpha * mean2
+        self.var2 = (1 - alpha) * self.var2 + alpha * var2
 
 
 # Calculate Mahalanobis Distance from Feature and mean
@@ -160,46 +184,24 @@ def MPPLoss(xn, xa, mean, var, ps, pb, m=1):
     sorted_dfm_xa = SBS(sorted_dfm_xa, B, T, int(B * T * ps), int(B * T * pb))
     sorted_dfm_xn = SLS(sorted_dfm_xn, B, T, len(sorted_dfm_xa))
 
-    sum = 0
-    for i in range(len(sorted_dfm_xa)):
-        ni, nj = sorted_dfm_xn[i][0], sorted_dfm_xn[i][1]
-        ai, aj = sorted_dfm_xa[i][0], sorted_dfm_xa[i][1]
-        sum += F.relu(m - dfm_xn[ni, nj] + dfm_xa[ai, aj])
-    loss = sum / len(sorted_dfm_xa)
+    loss = F.relu(m + dfm_xn - dfm_xa).mean()
     return loss
 
 
-# Custom Loss Function
-class MLoss(nn.Module):
-    def __init__(self, w1, w2):
-        super(MLoss, self).__init__()
-        self.w1 = w1
-        self.w2 = w2
+def count_loss(nor, mpp1, mpp2, w1, w2):
+    return nor + mpp1 * w1 + mpp2 * w2
 
-    def forward(self, nor, mpp1, mpp2):
-        return nor + mpp1 * self.w1 + mpp2 * self.w2
-    
+def count_score(cls1, cls2, dfm1, dfm2, w1, w2):
+    return torch.mean(cls1 * dfm1 * w1 + cls2 * dfm2 * w2, -1) / (w1 + w2)
 
-class BN_Statistics:
-    def __init__(self, device):
-        self.mean1 = torch.zeros(32).to(device)
-        self.var1 = torch.ones(32).to(device)
-        self.mean2 = torch.zeros(16).to(device)
-        self.var2 = torch.ones(16).to(device)
-    
-    def update(self, model, alpha):
-        mean1 = model.bn1.running_mean
-        var1 = model.bn1.running_var
-        mean2 = model.bn2.running_mean
-        var2 = model.bn2.running_var
-        self.mean1 = (1 - alpha) * self.mean1 + alpha * mean1
-        self.var1 = (1 - alpha) * self.var1 + alpha * var1
-        self.mean2 = (1 - alpha) * self.mean2 + alpha * mean2
-        self.var2 = (1 - alpha) * self.var2 + alpha * var2
+def count_auc_ap(all_labels, all_preds):
+    auc = roc_auc_score(all_labels, all_preds)
+    ap = average_precision_score(all_labels, all_preds)
+    return auc, ap
 
 
 # Training for one epoch
-def train_one_epoch(model, enhancer, classifier1, classifier2, dataloader, criterion, optimizer, alpha, ps, pb, w1, w2, device):
+def train_one_epoch(model, enhancer, classifier1, classifier2, dataloader, optimizer, alpha, ps, pb, w1, w2, device):
     model.train()
     enhancer.train()
     classifier1.train()
@@ -208,6 +210,7 @@ def train_one_epoch(model, enhancer, classifier1, classifier2, dataloader, crite
     all_preds = []
     all_labels = []
     bn_args = BN_Statistics(device)
+    optimizer.zero_grad()
 
     with torch.no_grad():
         for i, (data, labels) in enumerate(dataloader):
@@ -231,39 +234,43 @@ def train_one_epoch(model, enhancer, classifier1, classifier2, dataloader, crite
         bn_args.update(model, alpha)
 
         nor = classifier1(xh1[nmask]) * w1 + classifier2(xh2[nmask]) * w2
-        nor = torch.sum(nor)
+        nor = torch.mean(nor)
         mpp1 = MPPLoss(xh1[nmask], xh1[amask], bn_args.mean1, bn_args.var1, ps=ps, pb=pb, m=1)
         mpp2 = MPPLoss(xh2[nmask], xh2[amask], bn_args.mean2, bn_args.var2, ps=ps, pb=pb, m=1)
-        with torch.no_grad():
-            cls = classifier1(xh1) * w1 + classifier2(xh2) * w2
-            dfm1 = DFM(xh1, bn_args.mean1, bn_args.var1)
-            dfm2 = DFM(xh2, bn_args.mean2, bn_args.var2)
+        cls1 = classifier1(xh1)
+        cls2 = classifier2(xh2)
+        dfm1 = DFM(xh1, bn_args.mean1, bn_args.var1)
+        dfm2 = DFM(xh2, bn_args.mean2, bn_args.var2)
 
-        loss = criterion(nor, mpp1, mpp2).mean()
+        loss = count_loss(nor, mpp1, mpp2, w1, w2)
+        loss.backward()
+        if i % 4 == 3:
+            torch.nn.utils.clip_grad_norm_(
+                list(model.parameters()) + list(enhancer.parameters()) + list(classifier1.parameters()) + list(classifier2.parameters()),
+                max_norm=5.0
+            )
+            optimizer.step()
+            optimizer.zero_grad()
+        
+        total_loss += loss.item()
         with torch.no_grad():
-            score = cls * torch.sum(dfm1 * w1 + dfm2 * w2, -1)[0]
+            score = count_score(cls1, cls2, dfm1, dfm2, w1, w2)
             all_preds.append(score.cpu().numpy())
             all_labels.append(labels.cpu().numpy())
 
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-        total_loss += loss.item()
-        # print("labels:", labels.cpu().numpy())
-        # print("preds:", pred)
         print(f"Batch {i+1}/{len(dataloader)}, Loss: {loss.item():.4f}", end='\r')
-    
+        
     all_preds = np.concatenate(all_preds)
     all_labels = np.concatenate(all_labels)
-    # display_results(all_labels, all_preds)
-    auc = roc_auc_score(all_labels, all_preds)
+    auc, ap = count_auc_ap(all_labels, all_preds)
     return {
         "loss": total_loss / len(dataloader),
-        "auc": auc
+        "auc": auc,
+        "ap": ap
     }
 
 # Validation for one epoch
-def validate(model, enhancer, classifier1, classifier2, dataloader, criterion, alpha, ps, pb, w1, w2, device):
+def validate(model, enhancer, classifier1, classifier2, dataloader, alpha, ps, pb, w1, w2, device):
     model.eval()
     enhancer.eval()
     classifier1.eval()
@@ -295,15 +302,16 @@ def validate(model, enhancer, classifier1, classifier2, dataloader, criterion, a
             bn_args.update(model, alpha)
 
             nor = classifier1(xh1[nmask]) * w1 + classifier2(xh2[nmask]) * w2
-            nor = torch.sum(nor)
+            nor = torch.mean(nor)
             mpp1 = MPPLoss(xh1[nmask], xh1[amask], bn_args.mean1, bn_args.var1, ps=ps, pb=pb, m=1)
             mpp2 = MPPLoss(xh2[nmask], xh2[amask], bn_args.mean2, bn_args.var2, ps=ps, pb=pb, m=1)
-            cls = classifier1(xh1) * w1 + classifier2(xh2) * w2
+            cls1 = classifier1(xh1) * w1
+            cls2 = classifier2(xh2) * w2
             dfm1 = DFM(xh1, bn_args.mean1, bn_args.var1)
             dfm2 = DFM(xh2, bn_args.mean2, bn_args.var2)
 
-            loss = criterion(nor, mpp1, mpp2).mean()
-            score = cls * torch.sum(dfm1 * w1 + dfm2 * w2, -1)[0]
+            loss = count_loss(nor, mpp1, mpp2, w1, w2)
+            score = count_score(cls1, cls2, dfm1, dfm2, w1, w2)
             pred = score.cpu().numpy()
             all_preds.append(pred)
             all_labels.append(labels.cpu().numpy())
@@ -313,12 +321,14 @@ def validate(model, enhancer, classifier1, classifier2, dataloader, criterion, a
     
     all_preds = np.concatenate(all_preds)
     all_labels = np.concatenate(all_labels)
+    auc, ap = count_auc_ap(all_labels, all_preds)
     return {
         "loss": total_loss / len(dataloader),
-        "auc": roc_auc_score(all_labels, all_preds)
+        "auc": auc,
+        "ap": ap
     }
 
-def test(model, enhancer, classifier1, classifier2, dataloader, criterion, alpha, ps, pb, w1, w2, device):
+def test(model, enhancer, classifier1, classifier2, dataloader, alpha, ps, pb, w1, w2, device):
     model.eval()
     enhancer.eval()
     classifier1.eval()
@@ -346,28 +356,49 @@ def test(model, enhancer, classifier1, classifier2, dataloader, criterion, alpha
             xh1, xh2 = model(data)
             bn_args.update(model, alpha)
 
-            cls = classifier1(xh1) * w1 + classifier2(xh2) * w2
+            cls1 = classifier1(xh1) * w1
+            cls2 = classifier2(xh2) * w2
             dfm1 = DFM(xh1, bn_args.mean1, bn_args.var1)
             dfm2 = DFM(xh2, bn_args.mean2, bn_args.var2)
 
-            score = cls * torch.sum(dfm1 * w1 + dfm2 * w2, -1)[0]
+            score = count_score(cls1, cls2, dfm1, dfm2, w1, w2)
             pred = score.cpu().numpy()
             all_preds.append(pred)
             all_labels.append(labels.cpu().numpy())
 
-            print(f"Test Batch {i+1}/{len(dataloader)}", end='\r')
+            print(f"Test Batch {i+1}/{len(dataloader)}                ", end='\r\b')
     
     all_preds = np.concatenate(all_preds)
     all_labels = np.concatenate(all_labels)
-    # display_results(all_labels, all_preds)  # delete this line if don't want to display results during testing
+    auc, ap = count_auc_ap(all_labels, all_preds)
+    display_results(all_labels, all_preds)
     return {
-        "auc": roc_auc_score(all_labels, all_preds)
+        "auc": auc,
+        "ap": ap
     }
 
 # Main Training Loop
-def train(model, enhancer, classifier1, classifier2, train_loader, val_loader, test_loader, criterion, optimizer, scheduler, epochs, alpha, ps, pb, w1, w2, device):
+def train(model, enhancer, classifier1, classifier2, train_loader, val_loader, test_loader, optimizer, scheduler, epochs, alpha, ps, pb, w1, w2, device):
     for epoch in range(epochs):
-        train_res = train_one_epoch(model, enhancer, classifier1, classifier2, train_loader, criterion, optimizer, alpha, ps, pb, w1, w2, device)
-        val_res = validate(model, enhancer, classifier1, classifier2, val_loader, criterion, alpha, ps, pb, w1, w2, device)
-        test_res = test(model, enhancer, classifier1, classifier2, test_loader, criterion, alpha, ps, pb, w1, w2, device)
-        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {train_res['loss']:.4f}, AUC: {train_res['auc']:.4f} | Val Loss: {val_res['loss']:.4f}, AUC: {val_res['auc']:.4f} | Test AUC: {test_res['auc']:.4f}")
+        train_res = train_one_epoch(model, enhancer, classifier1, classifier2, train_loader, optimizer, alpha, ps, pb, w1, w2, device)
+        val_res = validate(model, enhancer, classifier1, classifier2, val_loader, alpha, ps, pb, w1, w2, device)
+        test_res = test(model, enhancer, classifier1, classifier2, test_loader, alpha, ps, pb, w1, w2, device)
+        print(f"Epoch {epoch+1}/{epochs}                      \n    Train Loss: {train_res['loss']:.4f}, AUC: {train_res['auc']:.4f}, AP: {train_res['ap']:.4f}  \n    Val Loss: {val_res['loss']:.4f}, AUC: {val_res['auc']:.4f}, AP: {val_res['ap']:.4f}  \n    Test AUC: {test_res['auc']:.4f}, AP: {test_res['ap']:.4f}")
+        writer.add_scalar('train/loss', train_res['loss'], epoch)
+        writer.add_scalar('train/auc', train_res['auc'], epoch)
+        writer.add_scalar('train/ap', train_res['ap'], epoch)
+        writer.add_scalar('val/loss', val_res['loss'], epoch)
+        writer.add_scalar('val/auc', val_res['auc'], epoch)
+        writer.add_scalar('val/ap', val_res['ap'], epoch)
+        writer.add_scalar('test/auc', test_res['auc'], epoch)
+        writer.add_scalar('test/ap', test_res['ap'], epoch)
+        for name, param in model.named_parameters():
+            writer.add_histogram("model/" + name, param.cpu().data.numpy(), epoch)
+        for name, param in enhancer.named_parameters():
+            writer.add_histogram("enhancer/" + name, param.cpu().data.numpy(), epoch)
+        for name, param in classifier1.named_parameters():
+            writer.add_histogram("classifier1/" + name, param.cpu().data.numpy(), epoch)
+        for name, param in classifier2.named_parameters():
+            writer.add_histogram("classifier2/" + name, param.cpu().data.numpy(), epoch)
+        writer.flush()
+    writer.close()

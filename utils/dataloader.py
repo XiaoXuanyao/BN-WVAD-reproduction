@@ -40,7 +40,7 @@ class MSampler(Sampler):
         self.pos_indices = np.where(self.labels == 0)[0]
         self.neg_indices = np.where(self.labels == 1)[0]
         once = self.batch_size / len(self.labels)
-        self.num_batches = max(0, int(math.log(0.1) / math.log(1 - once))) + 1
+        self.num_batches = max(0, int(math.log(0.05) / math.log(1 - once))) + 1
 
     def __iter__(self):
         for i in range(self.num_batches):
